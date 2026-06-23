@@ -1,0 +1,163 @@
+// MIT License
+// Copyright (c) 2026 Jayadev Rana
+//
+// Educational TradingView Pine Script indicator example.
+// This script detects numbered BB/EMA retest patterns and provides alert conditions.
+//@version=6
+indicator("BB EMA Retest Numbered Pattern v2", overlay = true, max_labels_count = 500)
+
+//------------------------------------------------------------------------------
+// Inputs
+//------------------------------------------------------------------------------
+patternGroup = "Pattern Logic"
+bbLengthInput = input.int(20, "BB Length", minval = 1, group = patternGroup)
+bbMultInput = input.float(2.0, "BB StdDev", minval = 0.1, step = 0.1, group = patternGroup)
+emaLengthInput = input.int(20, "EMA Length", minval = 1, group = patternGroup)
+rsiLengthInput = input.int(14, "RSI Length", minval = 1, group = patternGroup)
+buyRsiMinInput = input.float(40.0, "Buy RSI Minimum", step = 0.1, group = patternGroup)
+sellRsiMaxInput = input.float(40.0, "Sell RSI Maximum", step = 0.1, group = patternGroup)
+volumeAvgLengthInput = input.int(20, "Volume Average Length", minval = 1, group = patternGroup)
+retestToleranceTicksInput = input.int(30, "Retest Tolerance (Ticks)", minval = 0, group = patternGroup)
+firstHighRetestPercentInput = input.float(60.0, "Buy Candle 2 Retrace To Candle 1 High %", minval = 0.0, maxval = 100.0, step = 1.0, group = patternGroup)
+secondAreaRetestPercentInput = input.float(50.0, "Sell Candle 5 Retest Of Candle 2 Range %", minval = 0.0, maxval = 100.0, step = 1.0, group = patternGroup)
+requireBuyThirdLowerLowInput = input.bool(true, "Buy: Candle 3 Lower Low Than Candle 1", group = patternGroup)
+requireSellSecondLowerLowInput = input.bool(true, "Sell: Candle 2 Lower Low Than Candle 1", group = patternGroup)
+requireSellThirdHigherHighInput = input.bool(true, "Sell: Candle 3 Higher High Than Candle 1", group = patternGroup)
+requireSellFourthLowerLowInput = input.bool(true, "Sell: Candle 4 Lower Low Than Candle 2", group = patternGroup)
+requireSellFourthEmaCrossInput = input.bool(true, "Sell: Candle 4 Crosses Below EMA", group = patternGroup)
+
+volumeGroup = "Volume Rules"
+requireBuySecondLowerVolumeInput = input.bool(true, "Buy: Candle 2 Lower Volume Than Candle 1", group = volumeGroup)
+requireBuyThirdStrongVolumeInput = input.bool(true, "Buy: Candle 3 Volume > Avg Or Previous", group = volumeGroup)
+requireSellSecondLowerVolumeInput = input.bool(true, "Sell: Candle 2 Lower Volume Than Candle 1", group = volumeGroup)
+requireSellThirdLowerVolumeInput = input.bool(true, "Sell: Candle 3 Lower Volume Than Candle 1", group = volumeGroup)
+requireSellFifthStrongVolumeInput = input.bool(true, "Sell: Candle 5 Volume > Avg Or Previous", group = volumeGroup)
+
+visualGroup = "Visuals"
+showBollingerInput = input.bool(true, "Show Bollinger Bands", group = visualGroup)
+showEmaInput = input.bool(true, "Show EMA", group = visualGroup)
+showNumberLabelsInput = input.bool(true, "Show Number Labels", group = visualGroup)
+showSignalLabelsInput = input.bool(true, "Show BUY/SELL Labels", group = visualGroup)
+showDebugStagesInput = input.bool(false, "Show Debug Stage Markers", group = visualGroup)
+showBandFillInput = input.bool(false, "Fill Bollinger Bands", group = visualGroup)
+
+//------------------------------------------------------------------------------
+// Core calculations
+//------------------------------------------------------------------------------
+ema20 = ta.ema(close, emaLengthInput)
+bbBasis = ta.sma(close, bbLengthInput)
+bbDev = ta.stdev(close, bbLengthInput) * bbMultInput
+bbUpper = bbBasis + bbDev
+bbLower = bbBasis - bbDev
+rsiValue = ta.rsi(close, rsiLengthInput)
+volumeAvg = ta.sma(volume, volumeAvgLengthInput)
+tickTolerance = syminfo.mintick * retestToleranceTicksInput
+
+//------------------------------------------------------------------------------
+// Helpers
+//------------------------------------------------------------------------------
+isGreen(offset) => close[offset] > open[offset]
+isRed(offset) => close[offset] < open[offset]
+
+barTouchesLevel(offset, level, tolerance) =>
+    high[offset] >= level - tolerance and low[offset] <= level + tolerance
+
+strongVolume(offset, previousOffset) =>
+    volume[offset] > volumeAvg[offset] or volume[offset] > volume[previousOffset]
+
+rangeHigh(offset) => math.max(open[offset], close[offset])
+rangeLow(offset) => math.min(open[offset], close[offset])
+
+outsideLowerBand(offset) => low[offset] < bbLower[offset]
+outsideUpperBand(offset) => high[offset] > bbUpper[offset]
+backInsideLowerBand(offset) => close[offset] > bbLower[offset]
+backInsideUpperBand(offset) => close[offset] < bbUpper[offset]
+
+buyRetestsFirstHigh(offsetSecond, offsetFirst) =>
+    firstRange = math.max(high[offsetFirst] - low[offsetFirst], syminfo.mintick)
+    requiredLevel = low[offsetFirst] + firstRange * (firstHighRetestPercentInput * 0.01)
+    high[offsetSecond] >= requiredLevel - tickTolerance
+
+sellRetestsSecondArea(offsetEntry, offsetSecond) =>
+    secondRange = math.max(high[offsetSecond] - low[offsetSecond], syminfo.mintick)
+    overlapLevel = low[offsetSecond] + secondRange * (secondAreaRetestPercentInput * 0.01)
+    high[offsetEntry] >= overlapLevel - tickTolerance and low[offsetEntry] <= high[offsetSecond] + tickTolerance
+
+sellFourthEmaCross() =>
+    close[2] >= ema20[2] and close[1] < ema20[1]
+
+//------------------------------------------------------------------------------
+// Buy pattern: candles 1,2,3 are [2],[1],[0]
+//------------------------------------------------------------------------------
+buyStage1 = outsideLowerBand(2)
+buyStage2Band = backInsideLowerBand(1)
+buyStage2Ema = barTouchesLevel(1, ema20[1], tickTolerance)
+buyStage2HighRetest = buyRetestsFirstHigh(1, 2)
+buyStage2Volume = requireBuySecondLowerVolumeInput ? volume[1] < volume[2] : true
+buyStage2 = buyStage2Band and buyStage2Ema and buyStage2HighRetest and buyStage2Volume
+buyStage3Low = requireBuyThirdLowerLowInput ? low < low[2] : true
+buyStage3Color = isGreen(0)
+buyStage3Volume = requireBuyThirdStrongVolumeInput ? strongVolume(0, 1) : true
+buyStage3Rsi = rsiValue > buyRsiMinInput
+
+bool buySignal = barstate.isconfirmed and buyStage1 and buyStage2 and buyStage3Low and buyStage3Color and buyStage3Volume and buyStage3Rsi
+
+//------------------------------------------------------------------------------
+// Sell pattern: candles 1,2,3,4,5 are [4],[3],[2],[1],[0]
+//------------------------------------------------------------------------------
+sellStage1 = outsideUpperBand(4)
+sellStage2Band = backInsideUpperBand(3)
+sellStage2Ema = barTouchesLevel(3, ema20[3], tickTolerance)
+sellStage2Low = requireSellSecondLowerLowInput ? low[3] < low[4] : true
+sellStage2Volume = requireSellSecondLowerVolumeInput ? volume[3] < volume[4] : true
+sellStage2 = sellStage2Band and sellStage2Ema and sellStage2Low and sellStage2Volume
+sellStage3High = requireSellThirdHigherHighInput ? high[2] > high[4] : true
+sellStage3Volume = requireSellThirdLowerVolumeInput ? volume[2] < volume[4] : true
+sellStage3 = sellStage3High and sellStage3Volume
+sellStage4Low = requireSellFourthLowerLowInput ? low[1] < low[3] : true
+sellStage4Ema = requireSellFourthEmaCrossInput ? sellFourthEmaCross() : true
+sellStage4 = sellStage4Low and sellStage4Ema
+sellStage5Area = sellRetestsSecondArea(0, 3)
+sellStage5Color = isRed(0)
+sellStage5Volume = requireSellFifthStrongVolumeInput ? strongVolume(0, 1) : true
+sellStage5Rsi = rsiValue < sellRsiMaxInput
+
+bool sellSignal = barstate.isconfirmed and sellStage1 and sellStage2 and sellStage3 and sellStage4 and sellStage5Area and sellStage5Color and sellStage5Volume and sellStage5Rsi
+
+//------------------------------------------------------------------------------
+// Visuals
+//------------------------------------------------------------------------------
+plot(showEmaInput ? ema20 : na, "EMA", color = color.orange, linewidth = 2)
+pUpper = plot(showBollingerInput ? bbUpper : na, "BB Upper", color = color.new(color.blue, 0))
+pBasis = plot(showBollingerInput ? bbBasis : na, "BB Basis", color = color.new(color.gray, 60))
+pLower = plot(showBollingerInput ? bbLower : na, "BB Lower", color = color.new(color.blue, 0))
+fill(pUpper, pLower, color = showBandFillInput ? color.new(color.blue, 92) : na)
+
+// Debug stage markers are omitted from plots to keep the script non-repainting and clean.
+
+//------------------------------------------------------------------------------
+// Number labels and signal labels
+//------------------------------------------------------------------------------
+if buySignal and showNumberLabelsInput
+    label.new(bar_index - 2, low[2], "(1)", xloc = xloc.bar_index, style = label.style_label_up, color = color.new(color.green, 0), textcolor = color.white, size = size.tiny)
+    label.new(bar_index - 1, high[1], "(2)", xloc = xloc.bar_index, style = label.style_label_down, color = color.new(color.green, 0), textcolor = color.white, size = size.tiny)
+    label.new(bar_index, low, "(3)", xloc = xloc.bar_index, style = label.style_label_up, color = color.new(color.green, 0), textcolor = color.white, size = size.tiny)
+
+if sellSignal and showNumberLabelsInput
+    label.new(bar_index - 4, high[4], "(1)", xloc = xloc.bar_index, style = label.style_label_down, color = color.new(color.red, 0), textcolor = color.white, size = size.tiny)
+    label.new(bar_index - 3, low[3], "(2)", xloc = xloc.bar_index, style = label.style_label_up, color = color.new(color.red, 0), textcolor = color.white, size = size.tiny)
+    label.new(bar_index - 2, high[2], "(3)", xloc = xloc.bar_index, style = label.style_label_down, color = color.new(color.red, 0), textcolor = color.white, size = size.tiny)
+    label.new(bar_index - 1, low[1], "(4)", xloc = xloc.bar_index, style = label.style_label_up, color = color.new(color.red, 0), textcolor = color.white, size = size.tiny)
+    label.new(bar_index, high, "(5)", xloc = xloc.bar_index, style = label.style_label_down, color = color.new(color.red, 0), textcolor = color.white, size = size.tiny)
+
+if buySignal and showSignalLabelsInput
+    label.new(bar_index, low, "BUY", xloc = xloc.bar_index, style = label.style_label_up, color = color.new(color.lime, 0), textcolor = color.black, size = size.small)
+
+if sellSignal and showSignalLabelsInput
+    label.new(bar_index, high, "SELL", xloc = xloc.bar_index, style = label.style_label_down, color = color.new(color.red, 0), textcolor = color.white, size = size.small)
+
+//------------------------------------------------------------------------------
+// Alerts
+//------------------------------------------------------------------------------
+alertcondition(buySignal, title = "BB EMA Buy Pattern v2", message = "Buy pattern confirmed")
+alertcondition(sellSignal, title = "BB EMA Sell Pattern v2", message = "Sell pattern confirmed")
